@@ -11,57 +11,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/providers/ThemeProvider';
 import { spacing, borderRadius, typography } from '@/theme';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { create } from 'zustand';
-
-/* ───────────────────────────────────────
- * Zod validation schema
- * ───────────────────────────────────────*/
-
-const profileSchema = z.object({
-  displayName: z
-    .string()
-    .min(2, 'Name must be at least 2 characters')
-    .max(50, 'Name must be at most 50 characters'),
-  email: z.string().email('Enter a valid email address'),
-  bio: z.string().max(280, 'Bio must be at most 280 characters').optional(),
-});
-
-type ProfileFormData = z.infer<typeof profileSchema>;
-
-/* ───────────────────────────────────────
- * Zustand profile store
- * ───────────────────────────────────────*/
-
-interface ProfileState {
-  displayName: string;
-  email: string;
-  bio: string;
-  savedAt: string | null;
-  save: (data: ProfileFormData) => void;
-  clear: () => void;
-}
-
-const defaultProfile: ProfileFormData = {
-  displayName: '',
-  email: '',
-  bio: '',
-};
-
-const useProfileStore = create<ProfileState>((set) => ({
-  ...defaultProfile,
-  savedAt: null,
-  save: (data) =>
-    set({
-      displayName: data.displayName,
-      email: data.email,
-      bio: data.bio ?? '',
-      savedAt: new Date().toISOString(),
-    }),
-  clear: () => set({ ...defaultProfile, savedAt: null }),
-}));
+import { Controller } from 'react-hook-form';
+import { useProfileForm } from '@/features/profile/hooks/useProfileForm';
+import type { ProfileFormData } from '@/features/profile/domain/profileSchema';
+import { useSubscription } from '@/features/subscription/hooks/useSubscription';
+import { PaywallModal } from '@/shared/components/PaywallModal';
 
 /* ───────────────────────────────────────
  * Component
@@ -70,26 +24,27 @@ const useProfileStore = create<ProfileState>((set) => ({
 export default function ProfileScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const savedProfile = useProfileStore();
-  const { save } = useProfileStore();
+  const [showPaywall, setShowPaywall] = useState(false);
+  const { isPro, activeTier } = useSubscription();
 
   const {
     control,
     handleSubmit,
     formState: { errors, isDirty, isValid },
-    reset,
-  } = useForm<ProfileFormData>({
-    resolver: zodResolver(profileSchema),
-    defaultValues: {
-      displayName: savedProfile.displayName || '',
-      email: savedProfile.email || '',
-      bio: savedProfile.bio || '',
-    },
-  });
+    profile,
+    saveProfile,
+    clearProfile,
+    isSaving,
+    isClearing,
+  } = useProfileForm();
 
-  const onSubmit = (data: ProfileFormData) => {
-    save(data);
-    Alert.alert('Saved', 'Your profile has been updated.');
+  const onSubmit = async (data: ProfileFormData) => {
+    const result = await saveProfile(data);
+    if (result.success) {
+      Alert.alert('Saved', 'Your profile has been updated.');
+      return;
+    }
+    Alert.alert('Unable to save profile', result.error.message);
   };
 
   const handleClear = () => {
@@ -99,8 +54,11 @@ export default function ProfileScreen() {
         text: 'Clear',
         style: 'destructive',
         onPress: () => {
-          savedProfile.clear();
-          reset(defaultProfile);
+          void clearProfile().then((result) => {
+            if (!result.success) {
+              Alert.alert('Unable to clear profile', result.error.message);
+            }
+          });
         },
       },
     ]);
@@ -217,37 +175,94 @@ export default function ProfileScreen() {
       </View>
 
       {/* Last saved indicator */}
-      {savedProfile.savedAt && (
+      {profile && (
         <Text
           style={[
             typography.caption,
             { color: colors.textTertiary, textAlign: 'center', marginBottom: spacing.md },
           ]}
         >
-          Last saved: {new Date(savedProfile.savedAt).toLocaleString()}
+          Last saved: {new Date(profile.updatedAt).toLocaleString()}
         </Text>
       )}
+
+      {/* Subscription Demo Section */}
+      <View
+        style={{
+          backgroundColor: colors.card,
+          borderRadius: borderRadius.lg,
+          padding: spacing.md,
+          marginBottom: spacing.xl,
+          borderWidth: 1,
+          borderColor: isPro ? '#10B981' : colors.border,
+        }}
+      >
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs }}>
+          <Text style={[typography.h3, { color: colors.text }]}>Subscription Status</Text>
+          <View
+            style={{
+              backgroundColor: isPro ? '#10B981' : '#8B5CF6',
+              paddingHorizontal: spacing.sm,
+              paddingVertical: 2,
+              borderRadius: borderRadius.sm,
+            }}
+          >
+            <Text style={[typography.caption, { color: '#FFFFFF', fontWeight: 'bold' }]}>
+              {isPro ? `PRO (${activeTier.toUpperCase()})` : 'FREE PLAN'}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={[typography.bodySmall, { color: colors.textSecondary, marginBottom: spacing.md }]}>
+          {isPro
+            ? 'Your Pro membership is active. You have full access to all features.'
+            : 'Upgrade to Pro to unlock unlimited AI features, custom themes, and biometric security.'}
+        </Text>
+
+        <TouchableOpacity
+          style={{
+            backgroundColor: isPro ? 'rgba(16, 185, 129, 0.15)' : colors.tint,
+            borderRadius: borderRadius.md,
+            paddingVertical: spacing.sm + 2,
+            alignItems: 'center',
+          }}
+          onPress={() => setShowPaywall(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={[typography.button, { color: isPro ? '#10B981' : colors.background }]}>
+            {isPro ? 'Manage Pro Subscription' : '✨ Upgrade to Pro'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <PaywallModal
+        visible={showPaywall}
+        onClose={() => setShowPaywall(false)}
+        appName="Meadow"
+        subtitle="Experience unlimited access to all platform features"
+      />
 
       {/* Save Button */}
       <TouchableOpacity
         style={[
           styles.saveBtn,
-          { backgroundColor: colors.tint, opacity: isDirty && isValid ? 1 : 0.5 },
+          { backgroundColor: colors.tint, opacity: isDirty && isValid && !isSaving ? 1 : 0.5 },
         ]}
         onPress={handleSubmit(onSubmit)}
-        disabled={!isDirty || !isValid}
+        disabled={!isDirty || !isValid || isSaving}
         activeOpacity={0.8}
       >
-        <Text style={[typography.button, { color: colors.background }]}>Save Profile</Text>
+        <Text style={[typography.button, { color: colors.background }]}>{isSaving ? 'Saving…' : 'Save Profile'}</Text>
       </TouchableOpacity>
 
       {/* Clear Button */}
       <TouchableOpacity
         style={[styles.clearBtn, { borderColor: colors.border }]}
         onPress={handleClear}
+        disabled={isClearing}
         activeOpacity={0.7}
       >
-        <Text style={[typography.button, { color: colors.error }]}>Clear Profile Data</Text>
+        <Text style={[typography.button, { color: colors.error }]}>{isClearing ? 'Clearing…' : 'Clear Profile Data'}</Text>
       </TouchableOpacity>
     </ScrollView>
   );
